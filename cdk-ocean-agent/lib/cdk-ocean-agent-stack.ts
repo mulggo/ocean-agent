@@ -38,7 +38,7 @@ const supportedFormat = JSON.stringify(["pdf", "txt", "csv", "pptx", "ppt", "doc
 
 const max_object_size = 102400000; // 100 MB max size of an object, 50MB(default)
 const enableHybridSearch = 'true';
-const enableContexualRetrieval = 'false';
+const enableContexualRetrieval = 'true';
 
 const claude3_5_sonnet = [
   {
