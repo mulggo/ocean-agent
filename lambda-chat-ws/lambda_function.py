@@ -59,7 +59,7 @@ selected_chat = 0
 selected_multimodal = 0
 selected_embedding = 0
 useEnhancedSearch = False
-enableHybridSearch = 'false'
+enableHybridSearch = os.environ.get('enableHybridSearch')
     
 multi_region_models = [   # claude sonnet 3.0
     {   
@@ -216,9 +216,9 @@ def tavily_search(query, k):
 # result = tavily_search('what is LangChain', 2)
 # print('search result: ', result)
 
-def reflash_opensearch_index():
+def refresh_opensearch_index():
     #########################
-    # opensearch index (reflash)
+    # opensearch index (refresh)
     #########################
     print(f"deleting opensearch index... {vectorIndexName}") 
     
@@ -775,6 +775,78 @@ def get_parent_content(parent_doc_id):
     
     return source['text'], metadata['name'], url
 
+def lexical_search(query, top_k):
+    # lexical search (keyword)
+    min_match = 0
+    
+    query = {
+        "query": {
+            "bool": {
+                "must": [
+                    {
+                        "match": {
+                            "text": {
+                                "query": query,
+                                "minimum_should_match": f'{min_match}%',
+                                "operator":  "or",
+                            }
+                        }
+                    },
+                ],
+                "filter": [
+                ]
+            }
+        }
+    }
+
+    response = os_client.search(
+        body=query,
+        index=index_name
+    )
+    print('lexical query result: ', json.dumps(response))
+        
+    docs = []
+    for i, document in enumerate(response['hits']['hits']):
+        if i>=top_k: 
+            break
+                    
+        excerpt = document['_source']['text']
+        
+        name = document['_source']['metadata']['name']
+        # print('name: ', name)
+
+        page = ""
+        if "page" in document['_source']['metadata']:
+            page = document['_source']['metadata']['page']
+        
+        url = ""
+        if "url" in document['_source']['metadata']:
+            url = document['_source']['metadata']['url']            
+        
+        docs.append(
+                Document(
+                    page_content=excerpt,
+                    metadata={
+                        'name': name,
+                        'url': url,
+                        'page': page,
+                        'from': 'lexical'
+                    },
+                )
+            )
+    
+    for i, doc in enumerate(docs):
+        #print('doc: ', doc)
+        #print('doc content: ', doc.page_content)
+        
+        if len(doc.page_content)>=100:
+            text = doc.page_content[:100]
+        else:
+            text = doc.page_content            
+        print(f"--> lexical search doc[{i}]: {text}, metadata:{doc.metadata}")   
+        
+    return docs
+
 def get_answer_using_opensearch(chat, text, connectionId, requestId):    
     global reference_docs
     
@@ -844,7 +916,10 @@ def get_answer_using_opensearch(chat, text, connectionId, requestId):
                     },
                 )
             )
-
+    
+    if enableHybridSearch == 'true':
+        relevant_docs += lexical_search(text, top_k)    
+        
     isTyping(connectionId, requestId, "grading...")
     
     filtered_docs = grade_documents(text, relevant_docs) # grading
@@ -932,7 +1007,7 @@ def get_references(docs):
         
         if len(excerpt)<5000:
             if page:
-                reference = reference + f"{cnt}. {page}page in <a href={url} target=_blank>{name}</a>, {sourceType}, <a href=\"#\" onClick=\"alert(`{excerpt}`)\">관련문서</a>\n"
+                reference = reference + f"{cnt}. {page} page, <a href={url} target=_blank>{name}</a>, {sourceType}, <a href=\"#\" onClick=\"alert(`{excerpt}`)\">관련문서</a>\n"
             else:
                 reference = reference + f"{cnt}. <a href={url} target=_blank>{name}</a>, {sourceType}, <a href=\"#\" onClick=\"alert(`{excerpt}`)\">관련문서</a>\n"
             cnt = cnt + 1
@@ -1610,8 +1685,8 @@ def search_by_opensearch(keyword: str) -> str:
                 )
             )
     
-    #if enableHybridSearch == 'true':
-    #    relevant_docs = relevant_docs + lexical_search_for_tool(keyword, top_k)
+    if enableHybridSearch == 'true':
+        relevant_docs += lexical_search(keyword, top_k)
     
     print('doc length: ', len(relevant_docs))
                 
@@ -1901,8 +1976,7 @@ def retrieve(query: str, subject_company: str):
         boolean_filter = {
             "bool": {
                 "filter":[
-                    {"match" : {"metadata.subject_company":subject_company}},
-                    {"term" : {"metadata.doc_level":"child"}}
+                    {"match" : {"metadata.subject_company":subject_company}}
                 ]
             }
         }
@@ -2720,11 +2794,11 @@ def getResponse(connectionId, jsonBody):
         msg += f"current model: {modelId}"
         print('model lists: ', msg)    
         
-    elif type == 'text' and body[:21] == 'reflash current index':
-        # reflash index
+    elif type == 'text' and body[:21] == 'refresh current index':
+        # refresh index
         isTyping(connectionId, requestId, "")
-        reflash_opensearch_index()
-        msg = "The index was reflashed in OpenSearch."
+        refresh_opensearch_index()
+        msg = "The index was refreshed in OpenSearch."
         sendResultMessage(connectionId, requestId, msg)
         
     else:             
@@ -2747,6 +2821,12 @@ def getResponse(connectionId, jsonBody):
                     msg = general_conversation(connectionId, requestId, chat, text)                  
                 
                 elif convType == 'rag-opensearch':   # RAG - Vector
+                    msg = get_answer_using_opensearch(chat, text, connectionId, requestId)
+                    
+                    if reference_docs:
+                        reference = get_references(reference_docs)
+                
+                elif convType == 'rag-opensearch-chat':   # RAG - Vector
                     revised_question = revise_question(connectionId, requestId, chat, text)     
                     print('revised_question: ', revised_question)  
                     
